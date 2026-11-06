@@ -55,15 +55,85 @@ ESP32_Energy_Monitor/
 
 Weitere zum Sketch gehörende Dateien, insbesondere `cyd_config.h`, müssen im selben Sketch-Ordner liegen, sofern sie vom Code eingebunden werden.
 
-## 4. Bibliotheken installieren
+## 4. Benötigte Bibliotheken installieren
 
-Die erforderlichen Bibliotheken ergeben sich aus den `#include`-Anweisungen des aktuellen Sketches.
+Das Projekt verwendet das ESP32-Boardpaket von Espressif sowie drei zusätzliche Arduino-Bibliotheken.
 
-Sie werden über **Sketch → Bibliothek einbinden → Bibliotheken verwalten** installiert.
+### Zusätzliche Bibliotheken
 
-Die vollständige Liste mit getesteten Versionsnummern wird nach Abgleich mit V2.4.2 ergänzt.
+In der Arduino IDE unter **Sketch → Bibliothek einbinden → Bibliotheken verwalten** folgende Bibliotheken suchen und installieren:
 
-Bei Bibliotheken, die Bestandteil des ESP32-Boardpakets sind, ist normalerweise keine zusätzliche Installation erforderlich.
+1. **ArduinoJson** – JSON-Daten der Energiequellen verarbeiten
+2. **TFT_eSPI** – TFT-Display ansteuern
+3. **XPT2046_Touchscreen** – Touchcontroller auslesen
+
+Die weiteren verwendeten Bibliotheken und System-Header sind Bestandteil der ESP32-Entwicklungsumgebung und müssen normalerweise nicht separat installiert werden.
+
+### Displaykonfiguration
+
+Das ESP32-2432S028 (CYD) verwendet typischerweise einen ILI9341-Displaycontroller mit 320 × 240 Pixeln.
+
+**Wichtig:** Die Bibliothek `TFT_eSPI` benötigt eine passende Displaykonfiguration. Die Datei `cyd_config.h` allein konfiguriert `TFT_eSPI` nicht automatisch.
+
+Die erforderlichen Displaypins, SPI-Einstellungen und der Displaytreiber müssen daher in der `TFT_eSPI`-Konfiguration oder über eine entsprechende Build-Konfiguration festgelegt sein.
+
+Die exakte, getestete TFT_eSPI-Konfiguration wird noch dokumentiert.
+
+## 5. Hardware-Pinbelegung
+
+Die Datei `cyd_config.h` enthält folgende Pinbelegung für das verwendete ESP32-CYD-Board.
+
+### Hintergrundbeleuchtung
+
+| Funktion | GPIO |
+|---|---|
+| TFT Backlight | 21 |
+
+### Touchcontroller XPT2046
+
+| Funktion | GPIO |
+|---|---|
+| Touch CS | 33 |
+| Touch IRQ | 36 |
+| Touch CLK | 25 |
+| Touch MOSI | 32 |
+| Touch MISO | 39 |
+
+### MicroSD-Karte
+
+| Funktion | GPIO |
+|---|---|
+| SD CS | 5 |
+| SD SCK | 18 |
+| SD MISO | 19 |
+| SD MOSI | 23 |
+
+### Touchkalibrierung
+
+In `cyd_config.h` sind folgende Rohwerte hinterlegt:
+
+```cpp
+#define TOUCH_X_MIN 200
+#define TOUCH_X_MAX 3900
+#define TOUCH_Y_MIN 200
+#define TOUCH_Y_MAX 3900
+```
+
+Diese Werte sind typische Ausgangswerte. Je nach Display können eine individuelle Kalibrierung oder Anpassungen der Achsenausrichtung erforderlich sein.
+
+**Hinweis:** ESP32-CYD-Boards existieren in unterschiedlichen Hardware-Revisionen. Die Pinbelegung muss zur tatsächlich verwendeten Platine passen.
+
+## 6. Projektdateien
+
+Die für den Sketch erforderlichen Dateien müssen sich im selben Arduino-Sketch-Verzeichnis befinden:
+
+```text
+ESP32_Energy_Monitor/
+├── ESP32_Energy_Monitor.ino
+└── cyd_config.h
+```
+
+Die Datei `cyd_config.h` wird vom Sketch über `#include "cyd_config.h"` eingebunden und muss deshalb beim Kompilieren verfügbar sein.
 
 ## 5. Board und Schnittstelle auswählen
 
