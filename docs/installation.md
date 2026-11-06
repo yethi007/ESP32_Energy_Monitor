@@ -135,7 +135,7 @@ ESP32_Energy_Monitor/
 
 Die Datei `cyd_config.h` wird vom Sketch über `#include "cyd_config.h"` eingebunden und muss deshalb beim Kompilieren verfügbar sein.
 
-## 5. Board und Schnittstelle auswählen
+## 7. Board und Schnittstelle auswählen
 
 1. ESP32-CYD über ein USB-Datenkabel mit dem Computer verbinden.
 2. In der Arduino IDE das passende ESP32-Board auswählen.
@@ -144,7 +144,7 @@ Die Datei `cyd_config.h` wird vom Sketch über `#include "cyd_config.h"` eingebu
 
 **Hinweis:** Die konkreten Boardoptionen werden noch anhand der funktionierenden Entwicklungsumgebung dokumentiert.
 
-## 6. Sketch kompilieren und übertragen
+## 8. Sketch kompilieren und übertragen
 
 1. `ESP32_Energy_Monitor.ino` in der Arduino IDE öffnen.
 2. Prüfen, ob alle benötigten Dateien im Sketch-Ordner vorhanden sind.
@@ -156,7 +156,7 @@ Nach erfolgreicher Übertragung startet der ESP32 Energy Manager.
 
 Bei Problemen können die Ausgaben des seriellen Monitors zur Fehlersuche verwendet werden.
 
-## 7. WLAN und Datenquellen konfigurieren
+## 9. WLAN und Datenquellen konfigurieren
 
 Der ESP32 benötigt eine WLAN-Verbindung.
 
@@ -198,7 +198,7 @@ Benötigte Felder:
 
 Die IP-Adressen müssen zur eigenen Netzwerkkonfiguration passen.
 
-## 8. MicroSD-Karte vorbereiten
+## 10. MicroSD-Karte vorbereiten
 
 Die MicroSD-Karte dient zur langfristigen Speicherung von Messwerten und Fehlerprotokollen.
 
@@ -216,7 +216,7 @@ Die Messwerte werden in täglichen CSV-Dateien abgelegt, beispielsweise:
 
 Fehlerprotokolle werden im Verzeichnis `logs/` gespeichert.
 
-## 9. Funktion prüfen
+## 11. Funktion prüfen
 
 Nach der Installation sollten folgende Punkte kontrolliert werden:
 
@@ -230,7 +230,7 @@ Nach der Installation sollten folgende Punkte kontrolliert werden:
 - [ ] CSV-Aufzeichnung funktioniert.
 - [ ] Systemstatus wird korrekt angezeigt.
 
-## 10. Bekannte Einschränkungen von V2.4.2
+## 12. Bekannte Einschränkungen von V2.4.2
 
 Die 24-Stunden-Grafik in der Weboberfläche kann gelegentlich nicht vollständig geladen werden. Der Browser meldet dann möglicherweise einen abgebrochenen Vorgang.
 
@@ -238,7 +238,7 @@ Nach bisherigen Tests bleibt das Gerät dabei weiter bedienbar.
 
 Die Langzeitstabilität wird noch untersucht.
 
-## 11. Fehlerbehebung
+## 13. Fehlerbehebung
 
 **ESP32 wird nicht erkannt:** USB-Datenkabel, Treiber und seriellen Port prüfen.
 
