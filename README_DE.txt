@@ -1,3 +1,46 @@
+ENERGY MANAGER V2.4 – STABILITAET / RAM-HISTORIE
+================================================
+
+NEU
+- Web-Startseite / laedt nur Live-Status, kein Diagramm.
+- Separate Web-Grafik unter /chart; nur diese Seite ruft /api/chart24 ab.
+- 24h-Historie liegt im RAM (maximal 1440 Messpunkte, ca. 17 KB).
+- Nach Neustart werden die CSV-Dateien von gestern und heute EINMALIG
+  in kleinen Portionen (12 Zeilen pro loop) eingelesen.
+- Jede erfolgreich geschriebene Minuten-CSV-Zeile wird anschliessend
+  auch in die RAM-Historie uebernommen. Web und TFT lesen nur RAM.
+- Web-Diagramm liefert maximal 288 gemittelte Datenpunkte.
+- Web-Live-Status wird alle 2 Sekunden abgefragt.
+- SD-Fuellstand wird nur alle 10 Minuten ermittelt.
+- Display: Live-Hauptseite und separate 24h-Grafik durch Tippen.
+
+WICHTIG
+- Alle bestehenden CSV-Dateien und Einstellungen bleiben erhalten.
+- Vor dem Flashen SD-Karte sichern. Die erste Grafik kann nach dem
+  Start kurz unvollstaendig sein, bis die Historie eingelesen ist.
+- Falls die SD-Karte fehlt, gibt es keine persistente Historie.
+- Der Sketch ist NICHT auf echter CYD-Hardware kompiliert/getestet.
+- Bei weiterhin auftretenden Haengern bitte Dauer, Web-Seite und
+  Seriell-Monitor-Ausgabe dokumentieren.
+
+ENERGY MANAGER V2.3 — CYD ESP32-2432S028
+=======================================
+
+Neuerungen gegenüber V2.2:
+- Neue kompakte Live-Anzeige im Querformat (320x240), Titel Energy Manager mit gezeichnetem Sonne/Blitz-Logo.
+- Neben Netz und PV steht jeweils die Uhrzeit des letzten erfolgreichen HTTP-Abrufs.
+- Abrufzeit gelb ab >30 Sekunden, rot ab >60 Sekunden ohne Erfolg.
+- Netzbezug gesamt und PV-Erzeugung gesamt sowie beide Tageswerte auf dem Display.
+- WLAN-Status, Signalstärke, SD-Status, SD-Belegung in Prozent und IP-Adresse.
+- Dark-/Light-Mode und 24-Stunden-Grafik bleiben erhalten.
+- SD-Belegung wird maximal einmal pro Minute aktualisiert.
+
+Hinweis: Die SD-Belegung zeigt den belegten Anteil der gesamten Karte, nicht nur
+die CSV-Dateien. Bei nicht verfügbarer SD-Karte steht SD: Fehler.
+
+Die Messdaten-CSV, die Web-UI und das 30-Tage-Fehlerprotokoll entsprechen V2.2.
+Vor dem Flashen die SD-Karte sichern. Nicht auf CYD-Hardware kompiliert/getestet.
+
 ESP32 ENERGY MONITOR V2.2 – ESP32-2432S028 (CYD)
 
 FUNKTIONEN

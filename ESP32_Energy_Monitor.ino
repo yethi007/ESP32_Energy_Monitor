@@ -1,5 +1,5 @@
 /*
-  Energy Manager V2.4 - ESP32-2432S028 (CYD)
+  Energy Manager V2.4.2 - ESP32-2432S028 (CYD)
   Features:
   - HTTP/JSON meter-head polling (1 s default)
   - Configurable JSON paths for import/export counters and power
@@ -26,8 +26,14 @@
 #include <time.h>
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
+#include <esp_task_wdt.h>
+#include <esp_idf_version.h>
 #include "cyd_config.h"
 
+// =============================================================
+// Hardware, Datenmodelle und globale Zustandsvariablen
+// Alle globalen Deklarationen stehen vor ihrer ersten Verwendung.
+// =============================================================
 TFT_eSPI tft = TFT_eSPI();
 SPIClass touchSPI(HSPI);
 SPIClass sdSPI(VSPI);
@@ -55,7 +61,8 @@ struct Settings {
   uint16_t solarPort = 80, solarPollSeconds = 5;
   uint16_t retentionDays = 1825;
   bool darkMode = true;
-} cfg;
+};
+Settings cfg;
 
 struct MeterData {
   double importKWh = NAN;
@@ -66,32 +73,67 @@ struct MeterData {
   bool valid = false;
   double rawPowerW = NAN, solarPowerW = NAN, solarTotalKWh = NAN;
   bool solarValid = false;
-} liveData;
+};
+MeterData liveData;
 
-bool graphHistoryReady=false;
+// Zeitsteuerung und Messwert-Aggregation
 uint32_t lastPollMs = 0, lastSolarPollMs = 0, lastLogMs = 0, lastDrawMs = 0;
 double importPowerSum = 0, exportPowerSum = 0, rawPowerSum = 0, solarPowerSum = 0;
 uint32_t sampleCount = 0, rawCount = 0, solarCount = 0;
 double importPowerMax = 0, exportPowerMax = 0;
-bool sdReady = false, readerOnline = false;
-bool wifiWasConnected=false;
-uint32_t lastWiFiReconnect=0, lastLogPruneMs=0;
-time_t lastReaderSuccess=0, lastSolarSuccess=0;
-String readerError="", solarError="";
-// Error log: transitions and a maximum of one repeated identical error per 10 minutes.
-String previousEventKey="";
-uint32_t previousEventMs=0;
-uint32_t lastReaderErrorMs=0, lastSolarErrorMs=0;
-String lastReaderErrorKey="", lastSolarErrorKey="";
 
-String lastError = "Noch keine Abfrage";
-int screenPage = 0;
-double dayImportStart=NAN, daySolarStart=NAN;
-int dayKey=-1;
-uint16_t bgColor(){return cfg.darkMode?TFT_BLACK:TFT_WHITE;}
-uint16_t fgColor(){return cfg.darkMode?TFT_WHITE:TFT_BLACK;}
+// WLAN, SD und Datenquellen
+bool sdReady = false, readerOnline = false, wifiWasConnected = false;
+uint32_t lastWiFiReconnect = 0, lastLogPruneMs = 0;
+time_t lastReaderSuccess = 0, lastSolarSuccess = 0;
+String readerError = "", solarError = "", lastError = "Noch keine Abfrage";
 
+// Fehlerprotokoll: wiederkehrende Meldungen werden begrenzt.
+String previousEventKey = "", lastReaderErrorKey = "", lastSolarErrorKey = "";
+uint32_t previousEventMs = 0, lastReaderErrorMs = 0, lastSolarErrorMs = 0;
+
+// Tageswerte und Display
+int screenPage = 0, dayKey = -1;
+double dayImportStart = NAN, daySolarStart = NAN;
 uint32_t lastTouchMs = 0;
+uint8_t sdUsagePercent = 0;
+uint32_t lastSdUsageCheckMs = 0;
+bool sdCapacityKnown = false;
+
+// 24h-RAM-Historie: max. 1440 Minutenwerte (ca. 17 KB).
+// SD wird nur beim Start schrittweise eingelesen; neue Werte kommen
+// nach erfolgreichem CSV-Schreiben auch in diesen Puffer.
+constexpr int GRAPH_N = 1440;
+float graphNet[GRAPH_N];
+float graphSolar[GRAPH_N];
+uint32_t graphTime[GRAPH_N];
+int graphCount = 0;
+uint32_t graphLoadedMs = 0;
+bool graphHistoryReady = false;
+File historyFile;
+int historyDay = 1;
+uint32_t historyLines = 0;
+
+// Neustarts erfolgen erst im loop(), nie mitten in einer HTTP-Antwort.
+bool restartPending = false;
+uint32_t restartRequestedMs = 0;
+uint32_t lastSuccessfulAnyMs = 0;
+uint32_t bootMs = 0;
+uint32_t touchHoldStartMs = 0;
+bool touchHoldHandled = false;
+String restartReason = "";
+constexpr uint32_t DATA_STALE_RESTART_MS = 300000UL;
+constexpr uint32_t RESTART_COOLDOWN_SECONDS = 1800UL;
+
+
+uint16_t bgColor() { return cfg.darkMode ? TFT_BLACK : TFT_WHITE; }
+uint16_t fgColor() { return cfg.darkMode ? TFT_WHITE : TFT_BLACK; }
+
+// Funktionsprototypen fuer fruehe Aufrufe (Arduino IDE / C++).
+String timestampString(time_t t);
+void addHistoryPoint(uint32_t ts, float net, float solar);
+void updateSdUsage();
+void requestRestart(const String &reason);
 
 String jsonEscape(const String &s) {
   String o; for (size_t i=0;i<s.length();i++) {
@@ -100,10 +142,6 @@ String jsonEscape(const String &s) {
   } return o;
 }
 
-String timestampString(time_t t);
-void addHistoryPoint(uint32_t ts,float net,float solar);
-extern uint8_t sdUsagePercent;
-extern bool sdCapacityKnown;
 // Logs are independent of measurement CSVs. Only valid NTP timestamps are written.
 String logPath(time_t t) {
   struct tm tmv; localtime_r(&t,&tmv); char b[32];
@@ -428,6 +466,7 @@ void logMinute() {
 
 String statusJson() {
   String s="{";
+  s.reserve(850); // Reduziert Heap-Reallokationen beim JSON-Aufbau.
   s += "\"online\":" + String(readerOnline?"true":"false");
   s += ",\"wifi\":" + String(WiFi.status()==WL_CONNECTED?"true":"false");
   s += ",\"ip\":\""+WiFi.localIP().toString()+"\"";
@@ -449,53 +488,62 @@ String statusJson() {
   s += ",\"solar_last_ok\":\""+timestampString(lastSolarSuccess)+"\"";
   s += ",\"reader_error\":\""+jsonEscape(readerError)+"\"";
   s += ",\"solar_error\":\""+jsonEscape(solarError)+"\"";
+  // Speicherdiagnose: niedriger Minimum-Heap weist auf Engpaesse hin.
+  s += ",\"heap_free\":"+String(ESP.getFreeHeap());
+  s += ",\"heap_min\":"+String(ESP.getMinFreeHeap());
+  s += ",\"heap_max_block\":"+String(ESP.getMaxAllocHeap());
+  s += ",\"uptime_s\":"+String(millis()/1000UL);
+  s += ",\"restart_pending\":"+String(restartPending?"true":"false");
+  s += ",\"history_points\":"+String(graphCount);
+  s += ",\"history_ready\":"+String(graphHistoryReady?"true":"false");
   s += ",\"error\":\""+jsonEscape(lastError)+"\"}";
   return s;
 }
 
-const char INDEX_HTML[] PROGMEM = R"HTML(
-<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Energy Monitor</title><style>
-body{font:16px Arial;background:#101827;color:#edf2f7;margin:0;padding:18px}
-h1{font-size:22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
-.card{background:#1d2b40;padding:18px;border-radius:14px}.v{font-size:28px;font-weight:bold;margin-top:8px}
-small{color:#aab8ca}a,button{color:white;background:#2563eb;border:0;padding:10px 14px;border-radius:8px;text-decoration:none}
-input{width:95%;padding:9px;margin:5px 0 12px;background:#0d1726;color:white;border:1px solid #52627a;border-radius:6px}
-label{display:block;color:#b9c6d6}form{max-width:650px}.muted{color:#9fb0c5}
-</style><body><h1>⚡ ESP32 Energy Monitor</h1><p id="state" class="muted">Verbinde…</p>
+const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Energy Manager</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{font:16px system-ui,Arial;background:#101827;color:#f8fafc;margin:0;padding:16px}
+main{max-width:920px;margin:auto}header{display:flex;align-items:center;gap:12px;margin-bottom:16px}header .logo{background:#1e3a5f;color:#facc15;font-size:28px;border-radius:12px;padding:8px 13px}
+h1{font-size:24px;margin:0}small,.muted{color:#9fb0c5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.card{background:#1d2b40;border-radius:14px;padding:16px;min-width:0}.label{font-size:14px;font-weight:700;color:#93c5fd}.pv .label{color:#facc15}
+.value{font-size:clamp(25px,5vw,40px);font-weight:750;margin:8px 0}.detail{font-size:13px;color:#cbd5e1;line-height:1.8}
+nav{display:flex;flex-wrap:wrap;gap:9px;margin:16px 0}a,button{background:#2563eb;color:white;padding:10px 13px;border:0;border-radius:9px;text-decoration:none;cursor:pointer;font:inherit}
+footer{font-size:13px;color:#b9c7d9;margin-top:16px}.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#facc15}
+@media(max-width:500px){body{padding:10px}.card{padding:12px}.detail{font-size:12px}h1{font-size:21px}}
+</style></head><body><main>
+<header><div class="logo">⚡</div><div style="flex:1"><h1>Energy Manager</h1><small>Live-Monitor</small></div><div id="icons">WLAN · SD</div></header>
 <div class="grid">
-<div class="card"><small>Netzbezug aktuell</small><div class="v" id="iw">-- W</div></div>
-<div class="card"><small>Einspeisung aktuell</small><div class="v" id="ew">-- W</div></div>
-<div class="card"><small>Gesamtverbrauch</small><div class="v" id="ik">-- kWh</div></div>
-<div class="card"><small>Gesamteinspeisung</small><div class="v" id="ek">-- kWh</div></div>
-<div class="card"><small>Solarleistung</small><div class="v" id="sw">-- W</div></div>
-<div class="card"><small>Solarerzeugung gesamt</small><div class="v" id="sk">-- kWh</div></div>
-<div class="card"><small>Netzbezug heute</small><div class="v" id="di">-- kWh</div></div>
-<div class="card"><small>Solarerzeugung heute</small><div class="v" id="ds">-- kWh</div></div>
-</div><p><a href="/chart">24-Stunden-Grafik öffnen</a></p>
-<p id="updated" class="muted"></p><p><a href="/config">Einstellungen</a> <a href="/api/status">JSON API</a> <a href="/logs">Fehlerprotokoll</a></p>
-<div class="card"><h3>Netzwerk und Datenquellen</h3><div id="diagnostics">Lade Status…</div></div>
+<section class="card"><div class="label">NETZ</div><div class="value" id="nw">-- W</div><div class="detail">Abruf: <span id="nr">--</span><br>Heute: <span id="di">--</span> kWh<br>Gesamt: <span id="ik">--</span> kWh</div></section>
+<section class="card pv"><div class="label">PV</div><div class="value" id="sw">-- W</div><div class="detail">Abruf: <span id="sr">--</span><br>Heute: <span id="ds">--</span> kWh<br>Gesamt: <span id="sk">--</span> kWh</div></section>
+</div>
+<nav><a href="/chart">24h-Grafik</a><a href="/config">Einstellungen</a><a href="/status">Status</a><a href="/logs">Fehlerprotokoll</a></nav>
+<section class="card"><div id="state">Verbinde…</div><div class="detail" id="extra"></div></section>
+<footer id="foot">--</footer>
 <script>
-async function upd(){try{let r=await fetch('/api/status');let d=await r.json();
-document.getElementById('iw').textContent=d.import_w==null?'-- W':d.import_w.toFixed(0)+' W';
-document.getElementById('ew').textContent=d.export_w==null?'-- W':d.export_w.toFixed(0)+' W';
-document.getElementById('ik').textContent=(d.import_kwh??0).toFixed(3)+' kWh';
-document.getElementById('ek').textContent=(d.export_kwh??0).toFixed(3)+' kWh';
-document.getElementById('sw').textContent=d.solar_w==null?'-- W':d.solar_w.toFixed(0)+' W';
-document.getElementById('sk').textContent=d.solar_kwh==null?'-- kWh':d.solar_kwh.toFixed(3)+' kWh';
-document.getElementById('di').textContent=d.today_import_kwh==null?'-- kWh':d.today_import_kwh.toFixed(3)+' kWh';
-document.getElementById('ds').textContent=d.today_solar_kwh==null?'-- kWh':d.today_solar_kwh.toFixed(3)+' kWh';
-document.getElementById('state').textContent=(d.online?'Lesekopf verbunden':'Lesekopf nicht verbunden')+' · WLAN '+(d.wifi?'verbunden':'getrennt')+' · SD '+(d.sd?'bereit':'Fehler');
-document.getElementById('updated').textContent='Letzte Aktualisierung: '+d.updated+(d.error?' · '+d.error:'');
-document.getElementById('diagnostics').textContent='ESP32: '+d.ip+' · WLAN '+d.rssi+' dBm · Lesekopf zuletzt: '+d.reader_last_ok+' · Solar zuletzt: '+d.solar_last_ok+' · Lesekopf-Fehler: '+(d.reader_error||'keiner')+' · Solar-Fehler: '+(d.solar_error||'keiner');
-}catch(e){document.getElementById('state').textContent='Verbindung zum ESP32 fehlgeschlagen';}}
-upd();setInterval(upd,2000);
-</script></body></html>)HTML";
+const el=id=>document.getElementById(id);let busy=false,controller=null;
+const num=(v,n)=>v==null?'--':Number(v).toFixed(n);
+function clock(s){return s&&s.length>=8?s.slice(-8):'--'}
+async function update(){if(busy||document.hidden)return;busy=true;controller=new AbortController();
+const timeout=setTimeout(()=>controller.abort(),2500);
+try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error(r.status);
+const d=await r.json();el('nw').textContent=num(d.net_w,0)+' W';el('sw').textContent=num(d.solar_w,0)+' W';
+el('nr').textContent=clock(d.reader_last_ok);el('sr').textContent=clock(d.solar_last_ok);
+el('di').textContent=num(d.today_import_kwh,2);el('ds').textContent=num(d.today_solar_kwh,2);
+el('ik').textContent=num(d.import_kwh,2);el('sk').textContent=num(d.solar_kwh,2);
+el('icons').innerHTML='<span class="'+(d.wifi?'ok':'bad')+'">● WLAN</span> <span class="'+(d.sd?'ok':'bad')+'">● SD</span>';
+el('state').textContent='Netzbezug / Einspeisung: '+num(d.import_w,0)+' / '+num(d.export_w,0)+' W';
+el('extra').textContent='Lesekopf: '+(d.online?'OK':'keine Daten')+' · WLAN '+d.rssi+' dBm · SD '+(d.sd_used_percent??'--')+' % · Heap '+Math.round(d.heap_free/1024)+' KB';
+el('foot').textContent='IP: '+d.ip+' · Laufzeit '+Math.floor(d.uptime_s/60)+' min';
+}catch(e){el('state').textContent='Statusabfrage fehlgeschlagen – erneuter Versuch folgt';}
+finally{clearTimeout(timeout);busy=false;controller=null;}}
+update();setInterval(update,5000);document.addEventListener('visibilitychange',()=>{if(document.hidden&&controller)controller.abort();else if(!document.hidden)update()});
+</script></main></body></html>)HTML";
 
 void handleChartPage() {
   static const char PAGE[] PROGMEM=R"HTML(<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Energy Manager - 24h</title><style>body{font:16px Arial;background:#101827;color:#edf2f7;margin:20px}a{color:#8bc9ff}canvas{max-width:100%;background:#1d2b40;border-radius:9px}</style><h2>Leistung der letzten 24 Stunden</h2><p><a href="/">Zur Live-Anzeige</a></p><canvas id="graph" width="900" height="300" style="width:100%;height:300px"></canvas><p id="hint">Historie wird geladen ...</p><script>
-async function drawChart(){try{
-const r=await fetch('/api/chart24');const d=await r.json();const pts=d.points||[];
+let chartBusy=false;async function drawChart(){if(chartBusy||document.hidden)return;chartBusy=true;const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),12000);try{
+const r=await fetch('/api/chart24',{cache:'no-store',signal:ctrl.signal});if(!r.ok)throw Error(r.status);const d=await r.json();const pts=d.points||[];
 document.getElementById('hint').textContent=d.ready?'Netz (blau) · PV (gelb) · max. 288 Punkte':'Startdaten werden einmalig geladen ...';const c=document.getElementById('graph'),ctx=c.getContext('2d');const W=c.width,H=c.height;
 ctx.fillStyle='#1d2b40';ctx.fillRect(0,0,W,H);
 const vals=pts.flatMap(p=>[p.w,p.solar]).filter(v=>v!==null&&Number.isFinite(v));
@@ -509,7 +557,7 @@ for(const p of pts){const v=p[key];if(v===null||!Number.isFinite(v)){active=fals
 const x=L+Math.max(0,Math.min(1,(p.t-start)/86400))*(R-L),y=B-(v-lo)/(hi-lo)*(B-T);
 if(!active){ctx.moveTo(x,y);active=true;}else ctx.lineTo(x,y);}ctx.stroke();}
 line('w','#38bdf8');line('solar','#facc15');ctx.fillStyle='#aab8ca';ctx.fillText('-24 h',L,B+20);ctx.fillText('Jetzt',R-35,B+20);
-}catch(e){}}
+}catch(e){document.getElementById('hint').textContent='Grafik nicht erreichbar: '+e.message;}finally{clearTimeout(timer);chartBusy=false;}}
 drawChart();setInterval(drawChart,60000);
 </script></html>)HTML";
   server.send_P(200,"text/html; charset=utf-8",PAGE);
@@ -562,19 +610,6 @@ void handleSave() {
   server.send(200,"text/html","<meta charset='utf-8'>Gespeichert. Neustart in 2 Sekunden.");
   delay(2000); ESP.restart();
 }
-
-// V2.4: one in-memory 24-hour history; SD is only read once at startup.
-// Each successful CSV minute is appended to the same history after the SD write.
-const int GRAPH_N=1440;
-float graphNet[GRAPH_N];
-float graphSolar[GRAPH_N];
-uint32_t graphTime[GRAPH_N];
-int graphCount=0;
-uint32_t graphLoadedMs=0;
-// bool graphHistoryReady=false;
-File historyFile;
-int historyDay=1;
-uint32_t historyLines=0;
 
 void addHistoryPoint(uint32_t ts,float net,float solar) {
   if(ts<1700000000UL) return;
@@ -677,23 +712,59 @@ void drawGraph() {
 }
 
 void handleChart24() {
+  // Maximal 288 Datenpunkte. Kleine, feste HTTP-Bloecke statt 288
+  // einzelner sendContent()-Aufrufe (deutlich weniger TCP-Overhead).
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200,"application/json","{\"ready\":"+String(graphHistoryReady?"true":"false")+",\"points\":[");
+  server.send(200,"application/json; charset=utf-8","");
+  server.sendContent("{\"ready\":"+String(graphHistoryReady?"true":"false")+",\"points\":[");
   const int stride=max(1,(graphCount+287)/288);
+  String chunk; chunk.reserve(1100);
   bool first=true;
   for(int i=0;i<graphCount;i+=stride) {
-    // Aggregate a small block to retain average power while limiting browser traffic.
     double nw=0,sw=0;int nc=0,sc=0;
     for(int j=i;j<min(i+stride,graphCount);j++) {
       if(isfinite(graphNet[j])){nw+=graphNet[j];nc++;}
       if(isfinite(graphSolar[j])){sw+=graphSolar[j];sc++;}
     }
-    String item="{\"t\":"+String(graphTime[i])+",\"w\":"+jsonNum(nc?nw/nc:NAN,1)+",\"solar\":"+jsonNum(sc?sw/sc:NAN,1)+"}";
-    if(!first)item=","+item;
-    server.sendContent(item);first=false;
-    if(i%48==0)yield();
+    String item=String(first?"":",")+"{\"t\":"+String(graphTime[i])+",\"w\":"+
+      jsonNum(nc?nw/nc:NAN,1)+",\"solar\":"+jsonNum(sc?sw/sc:NAN,1)+"}";
+    first=false;
+    if(chunk.length()+item.length()>900) {
+      server.sendContent(chunk);chunk="";
+      yield();
+    }
+    chunk+=item;
   }
-  server.sendContent("]}");server.sendContent("");
+  if(chunk.length())server.sendContent(chunk);
+  server.sendContent("]}");
+  server.sendContent(""); // Terminator fuer Chunked-Encoding.
+}
+
+void requestRestart(const String &reason) {
+  if(restartPending)return;
+  restartReason=reason;
+  restartPending=true;
+  restartRequestedMs=millis();
+  Serial.println("Neustart angefordert: "+reason);
+}
+
+void handleRestart() {
+  // Nur POST, nicht als GET-Link ausloesbar.
+  server.sendHeader("Cache-Control","no-store");
+  server.send(200,"text/html; charset=utf-8",
+    "<meta charset='utf-8'><title>Neustart</title><p>Neustart angefordert. Bitte etwa 15 Sekunden warten.</p><a href='/'>Zur Startseite</a>");
+  requestRestart("Manueller Neustart ueber Web");
+}
+
+void handleStatusPage() {
+  static const char PAGE[] PROGMEM=R"HTML(<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Systemstatus</title>
+<style>body{font:16px system-ui,Arial;background:#101827;color:#f8fafc;margin:20px;max-width:850px}a{color:#93c5fd}pre{background:#1d2b40;padding:15px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere}button{background:#b91c1c;color:white;border:0;padding:12px 16px;border-radius:9px;cursor:pointer}</style>
+<h2>Energy Manager · Systemstatus</h2><p><a href="/">Startseite</a> · <a href="/api/status">JSON API</a></p><pre id="data">Lade…</pre>
+<button id="restart">System neu starten</button><script>
+fetch('/api/status',{cache:'no-store'}).then(r=>r.json()).then(d=>document.getElementById('data').textContent=JSON.stringify(d,null,2)).catch(()=>document.getElementById('data').textContent='Nicht erreichbar');
+document.getElementById('restart').onclick=async()=>{if(!confirm('Energy Manager wirklich neu starten?'))return;const r=await fetch('/api/restart',{method:'POST'});document.body.innerHTML=await r.text()};
+</script></html>)HTML";
+  server.send_P(200,"text/html; charset=utf-8",PAGE);
 }
 
 void handleLogs() {
@@ -734,6 +805,8 @@ void setupWeb() {
   server.on("/",HTTP_GET,[]{server.send_P(200,"text/html; charset=utf-8",INDEX_HTML);});
   server.on("/api/status",HTTP_GET,[]{server.send(200,"application/json",statusJson());});
   server.on("/api/chart24",HTTP_GET,handleChart24);
+  server.on("/status",HTTP_GET,handleStatusPage);
+  server.on("/api/restart",HTTP_POST,handleRestart);
   server.on("/chart",HTTP_GET,handleChartPage);
   server.on("/config",HTTP_GET,handleConfig);
   server.on("/logs",HTTP_GET,handleLogs);
@@ -749,10 +822,7 @@ void setupWeb() {
   server.begin();
 }
 
-// Display-only status helpers. SD usage is cached to avoid expensive operations every redraw.
-uint8_t sdUsagePercent=0;
-uint32_t lastSdUsageCheckMs=0;
-bool sdCapacityKnown=false;
+// SD-Belegung wird selten abgefragt; SD.totalBytes() ist nicht billig.
 void updateSdUsage() {
   if (!sdReady) { sdCapacityKnown=false; return; }
   if (lastSdUsageCheckMs && millis()-lastSdUsageCheckMs<600000UL) return;
@@ -851,16 +921,37 @@ void drawLive() {
 }
 
 void handleTouch() {
-  if(millis()-lastTouchMs<400 || !touch.touched())return;
-  touch.getPoint();lastTouchMs=millis();screenPage=(screenPage+1)%3;
-  if(screenPage==1){drawGraph();}
-  else if(screenPage==2){
-    cfg.darkMode=!cfg.darkMode;saveSettings();screenPage=0;drawLive();
-  }else drawLive();
+  // Auf der Systemseite: 3 Sekunden gedrueckt halten = Neustart.
+  bool pressed=touch.touched();
+  if(pressed) {
+    if(!touchHoldStartMs) {touchHoldStartMs=millis();touchHoldHandled=false;}
+    if(screenPage==2 && !touchHoldHandled && millis()-touchHoldStartMs>=3000UL) {
+      touchHoldHandled=true;
+      requestRestart("Manueller Neustart ueber Touch");
+      tft.fillScreen(bgColor());tft.setTextColor(fgColor());tft.setCursor(20,80);
+      tft.setTextSize(2);tft.print("Neustart...");
+    }
+    return;
+  }
+  if(!touchHoldStartMs)return;
+  uint32_t held=millis()-touchHoldStartMs;
+  touchHoldStartMs=0;
+  if(touchHoldHandled || held<40 || millis()-lastTouchMs<400)return;
+  lastTouchMs=millis();
+  if(screenPage==0) {screenPage=1;drawGraph();}
+  else if(screenPage==1) {
+    screenPage=2;
+    tft.fillScreen(bgColor());tft.setTextColor(fgColor());tft.setTextSize(2);
+    tft.setCursor(15,20);tft.print("System / Anzeige");
+    tft.setTextSize(1);tft.setCursor(15,75);tft.print("Kurz tippen: Dark/Light");
+    tft.setCursor(15,105);tft.print("3 Sekunden halten: Neustart");
+    tft.setCursor(15,160);tft.print("Neustart mit Bestaetigung durch Halten");
+  } else {cfg.darkMode=!cfg.darkMode;saveSettings();screenPage=0;drawLive();}
 }
 
 void setup() {
   Serial.begin(115200);
+  bootMs=millis();
   loadSettings();
 
   tft.init(); tft.setRotation(1); tft.fillScreen(bgColor());
@@ -877,16 +968,47 @@ void setup() {
 
   connectWiFi();
   setupWeb();
-  recordEvent("INFO","System","Energy Manager V2.4 gestartet");
+  recordEvent("INFO","System","Energy Manager V2.4.2 gestartet");
   if(!sdReady) Serial.println("Warnung: Fehlerprotokoll ohne SD nicht persistent");
   if(WiFi.status()==WL_CONNECTED) fetchReader();
   loadDayBaseline();
   updateSdUsage();
   drawLive();
+  // Task-Watchdog: erkennt blockierte Hauptschleifen.
+#if ESP_IDF_VERSION_MAJOR >= 5
+  esp_task_wdt_config_t wdtCfg = { .timeout_ms = 15000, .idle_core_mask = 0, .trigger_panic = true };
+  esp_task_wdt_init(&wdtCfg);
+#else
+  esp_task_wdt_init(15,true);
+#endif
+  esp_task_wdt_add(NULL);
 }
 
 void loop() {
+  esp_task_wdt_reset();
   server.handleClient();
+  // HTTP-Antwort und SD-Schreibvorgang vor Neustart abschliessen.
+  if(restartPending && millis()-restartRequestedMs>=1000UL) {
+    recordEvent("WARN","System","Neustart: "+restartReason);
+    delay(80);
+    ESP.restart();
+  }
+  // Beide Quellen 5 Minuten ohne Erfolg: Neustart mit 30-Minuten-Sperre.
+  // Eine einzelne ausgefallene Quelle loest keinen Neustart aus.
+  if(millis()-bootMs>DATA_STALE_RESTART_MS &&
+     millis()-(lastSuccessfulAnyMs?lastSuccessfulAnyMs:bootMs)>DATA_STALE_RESTART_MS &&
+     WiFi.status()==WL_CONNECTED) {
+    time_t now=time(nullptr);
+    if(now>1700000000) {
+      prefs.begin("energy-restart",false);
+      uint32_t last=(uint32_t)prefs.getULong("lastAuto",0);
+      if(!last || (uint32_t)now-last>=RESTART_COOLDOWN_SECONDS) {
+        prefs.putULong("lastAuto",(uint32_t)now);
+        prefs.end();
+        requestRestart("5 Minuten ohne erfolgreiche Datenquelle");
+      } else prefs.end();
+    }
+  }
   if(time(nullptr)>100000)loadDayBaseline();
   bool wifiConnected=WiFi.status()==WL_CONNECTED;
   if(wifiConnected!=wifiWasConnected){
@@ -913,6 +1035,14 @@ void loop() {
       solarPowerSum+=liveData.solarPowerW; solarCount++;
     }
   }
+  if(lastReaderSuccess>0 || lastSolarSuccess>0) {
+    // Erfolg wird anhand eines geaenderten Zeitstempels erkannt.
+    static time_t seenReader=0,seenSolar=0;
+    if(lastReaderSuccess!=seenReader || lastSolarSuccess!=seenSolar) {
+      seenReader=lastReaderSuccess;seenSolar=lastSolarSuccess;
+      lastSuccessfulAnyMs=millis();
+    }
+  }
   if(millis()-lastLogMs>=60000) { lastLogMs=millis(); logMinute(); }
   if(millis()-lastLogPruneMs>=3600000UL || lastLogPruneMs==0){
     lastLogPruneMs=millis();pruneErrorLogs();
@@ -923,7 +1053,16 @@ void loop() {
   if(millis()-lastDrawMs>2000) {
     lastDrawMs=millis();
     if(screenPage==0) drawLive();
-    else if(millis()-lastDrawMs<2100) drawGraph();
+    // Grafik nur bei neuen Daten oder spaetestens alle 60 Sekunden zeichnen.
+    // Das verhindert tausende TFT-Zeichenoperationen alle 2 Sekunden.
+    else if(screenPage==1) {
+      static uint32_t lastGraphDrawMs=0, lastGraphDataMs=0;
+      if(lastGraphDrawMs==0 || graphLoadedMs!=lastGraphDataMs ||
+         millis()-lastGraphDrawMs>=60000UL) {
+        drawGraph();
+        lastGraphDrawMs=millis();lastGraphDataMs=graphLoadedMs;
+      }
+    }
   }
   delay(5);
 }
