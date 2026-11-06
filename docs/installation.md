@@ -77,7 +77,33 @@ Das ESP32-2432S028 (CYD) verwendet typischerweise einen ILI9341-Displaycontrolle
 
 Die erforderlichen Displaypins, SPI-Einstellungen und der Displaytreiber müssen daher in der `TFT_eSPI`-Konfiguration oder über eine entsprechende Build-Konfiguration festgelegt sein.
 
-Die exakte, getestete TFT_eSPI-Konfiguration wird noch dokumentiert.
+### TFT_eSPI für das CYD konfigurieren
+
+Für das ESP32-2432S028 ist eine passende Konfiguration der Bibliothek `TFT_eSPI` erforderlich.
+
+Die mit diesem Projekt verwendete Konfiguration liegt im Repository unter:
+
+`config/User_Setup.h`
+
+**Einrichtung:**
+
+1. Arduino IDE schließen.
+2. Den Installationsordner der Bibliothek `TFT_eSPI` öffnen, üblicherweise unter `Arduino/libraries/TFT_eSPI/`.
+3. Die dort vorhandene `User_Setup.h` als Sicherung kopieren.
+4. Die Datei `config/User_Setup.h` aus diesem Projekt in den Bibliotheksordner kopieren und die vorhandene Datei ersetzen.
+5. In `User_Setup_Select.h` prüfen, dass folgende Zeile aktiv ist:
+
+```cpp
+#include <User_Setup.h>
+```
+
+6. Arduino IDE erneut starten und den Sketch kompilieren.
+
+Die bereitgestellte Konfiguration verwendet den Displaytreiber `ILI9341_2_DRIVER`, die CYD-TFT-Pins und den HSPI-Port.
+
+**Wichtig:** Bei einer Neuinstallation oder Aktualisierung von `TFT_eSPI` kann die Bibliothekskonfiguration überschrieben werden. In diesem Fall muss die passende `User_Setup.h` erneut eingerichtet werden.
+
+Die Konfiguration wurde aus der funktionierenden Entwicklungsumgebung übernommen. Andere CYD-Hardwareversionen können abweichende Einstellungen benötigen.
 
 ## 5. Hardware-Pinbelegung
 
