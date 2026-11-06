@@ -12,8 +12,37 @@ Das Projekt befindet sich in aktiver Entwicklung. Die Versionsangaben beschreibe
 - Weitere Langzeit- und Stabilitätstests
 - Optimierung der Speicher- und Netzwerkverarbeitung
 - Verbesserung der Dokumentation und Installationsanleitung
+- Konzept für interaktive Grafiken über längere Zeiträume (z. B. 7 Tage, 30 Tage) mit ressourcenschonender Datenaufbereitung
 
-## [2.4.2] – Aktueller Teststand
+## [2.5.0] – Display- und WebUI-Überarbeitung
+
+### Touchdisplay (V2.5.0-A)
+
+- Kompakte und detaillierte Hauptansicht mit Wechsel per Doppeltipp
+- Größere Anzeige der aktuellen Netz- und PV-Leistung
+- Dark-/Light-Umschaltung und Speicherung der gewählten Ansicht und Darstellung
+- Überarbeitete 24-Stunden-Grafik mit gestrichelten Hilfslinien, kräftigeren Kurven und durchgezogenen Achsen
+- Farbige Statusanzeigen und überarbeiteter 24h-Grafik-Button
+- Systemmenü mit Neustartbestätigung per längerem Drücken
+
+### Weboberfläche (V2.5.0-B)
+
+- Neues responsives Layout mit den vier Registerkarten Übersicht, 24h-Verlauf, System und Einstellungen
+- Horizontale Registerleiste und Wisch-Navigation zwischen den Seiten auf Smartphones
+- Dark-/Light-Umschaltung mit Speicherung der Auswahl im Browser
+- Größer hervorgehobene Tagesenergiewerte und Statusanzeigen für WLAN, Lesekopf, Solarzugriff und SD-Karte
+- Systemansicht mit detailliertem Verbindungsstatus, SD-Speicherbelegung, Heap-Diagnose und Fehlerprotokoll
+- SD-Füllstandsanzeige: grün unter 80 %, gelb ab 80 %, rot ab 90 %; Fehler rot
+- Neu strukturierte Einstellungen für Lesekopf, Solardaten und allgemeine Optionen
+- Bedarfsgesteuertes Nachladen von Verlauf, Diagnose und Einstellungen statt unnötiger Hintergrundabfragen
+
+### Hinweise
+
+- Display und Weboberfläche wurden auf der Zielhardware im praktischen Betrieb getestet.
+- Die Langzeitstabilität von V2.5.0 wird weiter beobachtet.
+- Der zuvor gelegentlich beobachtete Abbruch der 24-Stunden-Grafik im Browser bleibt ein Beobachtungspunkt; eine endgültige Behebung ist nicht bestätigt.
+
+## [2.4.2] – Vorheriger Entwicklungsstand
 
 ### Hinzugefügt
 
